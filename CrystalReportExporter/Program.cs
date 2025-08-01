@@ -1,8 +1,4 @@
-﻿// =================================================================================
-//  Crystal Reports Definition Extractor - FINAL WORKING VERSION
-//  Includes fix for the ParameterField casting error.
-// =================================================================================
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -16,27 +12,24 @@ namespace CrystalReportDocumenter_Workaround
     {
         static void Main(string[] args)
         {
+            // Main method remains the same...
             if (args.Length != 2) { Console.WriteLine("Usage: CrystalReportDocumenter.exe \"<in.rpt>\" \"<out.txt>\""); return; }
             string reportPath = args[0];
             string outputPath = args[1];
             if (!File.Exists(reportPath)) { Console.WriteLine($"Error: Input file not found."); return; }
-
             Console.WriteLine($"Processing: {Path.GetFileName(reportPath)}");
             var sb = new StringBuilder();
             ReportDocument reportDocument = new ReportDocument();
             try
             {
                 reportDocument.Load(reportPath);
-
                 sb.AppendLine($"# REPORT DEFINITION (Generated via Workaround): {Path.GetFileName(reportPath)}");
                 sb.AppendLine("====================================================================");
-
-                ExtractSqlQueryWithReflection(reportDocument, sb);
-                ExtractParameters(reportDocument, sb); // This method is now fixed
+                ExtractSqlQueryWithReflection(reportDocument, sb); // Using Plan B
+                ExtractParameters(reportDocument, sb);
                 ExtractSelectionFormulas(reportDocument, sb);
                 ExtractCustomFormulas(reportDocument, sb);
                 ExtractGrouping(reportDocument, sb);
-
                 File.WriteAllText(outputPath, sb.ToString());
                 Console.WriteLine($"\nSuccessfully created definition file.");
             }
@@ -48,6 +41,9 @@ namespace CrystalReportDocumenter_Workaround
             }
         }
 
+        // ========================================================
+        // THIS IS THE 'PLAN B' DEEP REFLECTION METHOD
+        // ========================================================
         private static void ExtractSqlQueryWithReflection(ReportDocument rd, StringBuilder sb)
         {
             sb.AppendLine("\n--- DATABASE & SQL QUERY ---");
@@ -61,40 +57,56 @@ namespace CrystalReportDocumenter_Workaround
                     dynamic rasTables = pi.GetValue(rd.Database.Tables, null);
                     if (rasTables.Count > 0)
                     {
-                        var commandText = rasTables[0].CommandText;
-                        if (!string.IsNullOrEmpty(commandText))
+                        object tableObject = rasTables[0];
+                        var commandTextProperty = tableObject.GetType().GetProperty("CommandText");
+                        if (commandTextProperty != null)
                         {
-                            sb.AppendLine("[SQL Source: Command Object (via Reflection)]");
-                            sb.AppendLine(commandText);
-                            return;
+                            var commandText = commandTextProperty.GetValue(tableObject, null)?.ToString();
+                            if (!string.IsNullOrEmpty(commandText))
+                            {
+                                sb.AppendLine("[SQL Source: Command Object (via Deep Reflection)]");
+                                sb.AppendLine(commandText);
+                                return; // Found a command, so we are done.
+                            }
                         }
                     }
                 }
 
-                sb.AppendLine("[SQL Source: Generated from Linked Tables]");
-                sb.AppendLine("Could not extract generated SQL because the standard API (GetSQLStatement) is inaccessible in this environment.");
-                sb.AppendLine("The tables used are:");
-                foreach (Table table in rd.Database.Tables) { sb.AppendLine($"- {table.Name}"); }
+                // ========================================================
+                // THIS IS THE NEW "GOOD ENOUGH" PART
+                // ========================================================
+                sb.AppendLine("[SQL Source: Report uses Linked Tables]");
+                sb.AppendLine("The standard API to generate the SQL is inaccessible in this environment.");
+                sb.AppendLine("Listing the tables used instead:");
+
+                if (rd.Database.Tables.Count > 0)
+                {
+                    foreach (Table table in rd.Database.Tables)
+                    {
+                        sb.AppendLine($"- {table.Name}");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("No tables found.");
+                }
             }
-            catch (Exception ex) { sb.AppendLine($"Could not retrieve SQL Query. Error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"Could not retrieve database info. Error: {ex.Message}");
+            }
         }
 
-        // ========================================================
-        // THIS IS THE CORRECTED METHOD
-        // ========================================================
+        // --- Other methods remain unchanged ---
+
         private static void ExtractParameters(ReportDocument reportDocument, StringBuilder sb)
         {
             sb.AppendLine("\n--- PARAMETERS ---");
-            if (reportDocument.ParameterFields.Count == 0)
-            {
-                sb.AppendLine("No parameters found.");
-            }
+            if (reportDocument.ParameterFields.Count == 0) { sb.AppendLine("No parameters found."); }
             else
             {
-                // FIX: The collection contains 'ParameterField' objects.
                 foreach (ParameterField param in reportDocument.ParameterFields)
                 {
-                    // FIX: Use the properties available on the 'ParameterField' type.
                     sb.AppendLine($"Name: {param.Name}, Type: {param.ParameterValueType}, Prompt: \"{param.PromptText}\"");
                 }
             }
