@@ -1,6 +1,6 @@
 ﻿// =================================================================================
-//  Crystal Reports Definition Extractor - WORKAROUND VERSION
-//  Uses Reflection to bypass broken API access.
+//  Crystal Reports Definition Extractor - FINAL WORKING VERSION
+//  Includes fix for the ParameterField casting error.
 // =================================================================================
 using System;
 using System.IO;
@@ -8,7 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using CrystalDecisions.CrystalReports.Engine;
-using CrystalDecisions.Shared; // You still need this basic reference
+using CrystalDecisions.Shared;
 
 namespace CrystalReportDocumenter_Workaround
 {
@@ -26,14 +26,13 @@ namespace CrystalReportDocumenter_Workaround
             ReportDocument reportDocument = new ReportDocument();
             try
             {
-                // We will try loading without the enum, as it's failing for you.
                 reportDocument.Load(reportPath);
 
                 sb.AppendLine($"# REPORT DEFINITION (Generated via Workaround): {Path.GetFileName(reportPath)}");
                 sb.AppendLine("====================================================================");
 
                 ExtractSqlQueryWithReflection(reportDocument, sb);
-                ExtractParameters(reportDocument, sb);
+                ExtractParameters(reportDocument, sb); // This method is now fixed
                 ExtractSelectionFormulas(reportDocument, sb);
                 ExtractCustomFormulas(reportDocument, sb);
                 ExtractGrouping(reportDocument, sb);
@@ -49,20 +48,13 @@ namespace CrystalReportDocumenter_Workaround
             }
         }
 
-        /// <summary>
-        /// This method uses Reflection to get the SQL Command text. It's a workaround for
-        /// when the standard API ('GetSQLStatement') fails due to environment issues.
-        /// </summary>
         private static void ExtractSqlQueryWithReflection(ReportDocument rd, StringBuilder sb)
         {
             sb.AppendLine("\n--- DATABASE & SQL QUERY ---");
             try
             {
-                if (!rd.IsLoaded)
-                    throw new ArgumentException("Report document is not loaded.");
+                if (!rd.IsLoaded) throw new ArgumentException("Report document is not loaded.");
 
-                // This works for reports based on a "SQL Command".
-                // It uses a non-public property, so it's fragile and may break with future CR versions.
                 PropertyInfo pi = rd.Database.Tables.GetType().GetProperty("RasTables", BindingFlags.NonPublic | BindingFlags.Instance);
                 if (pi != null)
                 {
@@ -74,24 +66,37 @@ namespace CrystalReportDocumenter_Workaround
                         {
                             sb.AppendLine("[SQL Source: Command Object (via Reflection)]");
                             sb.AppendLine(commandText);
-                            return; // Success, we are done.
+                            return;
                         }
                     }
                 }
 
-                // If the above fails, it's likely a report with linked tables.
-                // Since GetSQLStatement is broken in your environment, we can't get the generated SQL.
                 sb.AppendLine("[SQL Source: Generated from Linked Tables]");
                 sb.AppendLine("Could not extract generated SQL because the standard API (GetSQLStatement) is inaccessible in this environment.");
                 sb.AppendLine("The tables used are:");
-                foreach (Table table in rd.Database.Tables)
-                {
-                    sb.AppendLine($"- {table.Name}");
-                }
+                foreach (Table table in rd.Database.Tables) { sb.AppendLine($"- {table.Name}"); }
             }
-            catch (Exception ex)
+            catch (Exception ex) { sb.AppendLine($"Could not retrieve SQL Query. Error: {ex.Message}"); }
+        }
+
+        // ========================================================
+        // THIS IS THE CORRECTED METHOD
+        // ========================================================
+        private static void ExtractParameters(ReportDocument reportDocument, StringBuilder sb)
+        {
+            sb.AppendLine("\n--- PARAMETERS ---");
+            if (reportDocument.ParameterFields.Count == 0)
             {
-                sb.AppendLine($"Could not retrieve SQL Query. Error: {ex.Message}");
+                sb.AppendLine("No parameters found.");
+            }
+            else
+            {
+                // FIX: The collection contains 'ParameterField' objects.
+                foreach (ParameterField param in reportDocument.ParameterFields)
+                {
+                    // FIX: Use the properties available on the 'ParameterField' type.
+                    sb.AppendLine($"Name: {param.Name}, Type: {param.ParameterValueType}, Prompt: \"{param.PromptText}\"");
+                }
             }
         }
 
@@ -99,35 +104,17 @@ namespace CrystalReportDocumenter_Workaround
         {
             sb.AppendLine("\n--- GROUPING ---");
             if (reportDocument.DataDefinition.Groups.Count == 0) { sb.AppendLine("No groups found."); return; }
-
             for (int i = 0; i < reportDocument.DataDefinition.Groups.Count; i++)
             {
-                // This logic is correct and uses the basic API.
                 CrystalDecisions.CrystalReports.Engine.Group group = reportDocument.DataDefinition.Groups[i];
-
-                // FIX for 'SortDirection' not found:
-                // Find the corresponding sort field to get the direction.
-                SortField sortField = reportDocument.DataDefinition.SortFields
-                    .Cast<SortField>()
-                    .FirstOrDefault(sf => sf.Field.Name == group.ConditionField.Name);
-
+                SortField sortField = reportDocument.DataDefinition.SortFields.Cast<SortField>().FirstOrDefault(sf => sf.Field.Name == group.ConditionField.Name);
                 string sortDirection = "(unknown)";
                 if (sortField != null)
                 {
-                    // The SortDirection enum is in CrystalDecisions.Shared.dll
                     sortDirection = sortField.SortDirection == SortDirection.AscendingOrder ? "Ascending" : "Descending";
                 }
-
                 sb.AppendLine($"Group #{i + 1}: By Field [{group.ConditionField.Name}], Sort: {sortDirection}");
             }
-        }
-
-        // --- These methods use the basic API and should work if your core references are okay ---
-        private static void ExtractParameters(ReportDocument reportDocument, StringBuilder sb)
-        {
-            sb.AppendLine("\n--- PARAMETERS ---");
-            if (reportDocument.ParameterFields.Count == 0) { sb.AppendLine("No parameters found."); }
-            else { foreach (ParameterFieldDefinition p in reportDocument.ParameterFields) sb.AppendLine($"Name: {p.Name}, Type: {p.ValueType}"); }
         }
 
         private static void ExtractSelectionFormulas(ReportDocument reportDocument, StringBuilder sb)
